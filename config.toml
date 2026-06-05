@@ -12,6 +12,6 @@ build_search_index = false
 
 [extra]
 # Site info
-title = "CLOP"
-description = "Count Command Line OPtions"
+title = "clop"
+description = "Command-Line OPtions"
 author = "Xhevahire Tërnava"
