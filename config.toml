@@ -13,5 +13,5 @@ build_search_index = false
 [extra]
 # Site info
 title = "CLOP"
-description = "Code Language and Optimization Project"
-author = "anonymous"
+description = "Count Command Line OPtions"
+author = "Xhevahire Tërnava"

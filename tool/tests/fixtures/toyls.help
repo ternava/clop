@@ -1,0 +1,8 @@
+usage: toyls [-1aA] [--color[=auto]] [directory...]
+
+list files
+
+  -1  list one file per line
+  -a  all files including .hidden
+  -A  list all files but . and ..
+  --color  control color output

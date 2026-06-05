@@ -1,0 +1,9 @@
+Usage: edge [OPTIONS]
+
+These lines exercise the tricky parts of the parser.
+
+  -f, -F, --force            two short spellings plus one long spelling
+  -o FILE, --output=FILE     short option with a separate argument, plus long
+  --                         end-of-options marker, must NOT be counted
+  - read from standard input, must NOT be counted
+  --no-arg-here              a lone long option with no short alias

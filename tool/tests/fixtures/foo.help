@@ -1,0 +1,13 @@
+Usage: foo [OPTION]... [FILE]...
+Do something useful with each FILE.
+
+Mandatory arguments to long options are mandatory for short options too.
+  -a, --all                  do not ignore entries starting with .
+  -A, --almost-all           do not list implied . and ..
+      --author               with -l, print the author of each file
+  -b, --escape               print C-style escapes for nongraphic characters
+      --block-size=SIZE      with -l, scale sizes by SIZE
+  -w, --width=COLS           set output width to COLS
+      --color[=WHEN]         colorize the output WHEN
+  -h, --help     display this help and exit
+      --version  output version information and exit

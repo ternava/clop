@@ -1,0 +1,459 @@
+#!/usr/bin/env bash
+#
+# clop: Count CLi OPtions
+#
+# A small tool that counts the command-line options a program advertises in
+# its `--help` text. Think of it as `cloc`, but instead of counting lines of
+# code in a codebase, it counts the options in a program's interface.
+#
+# It understands the common one-option-per-line help layouts produced by GNU
+# coreutils, BusyBox, and Toybox, for example:
+#
+#     -a, --all                  do not ignore entries starting with .
+#         --author               with -l, print the author of each file
+#         --block-size=SIZE      with -l, scale sizes by SIZE
+#
+# For each program it reports:
+#
+#   * version             - the program's version, when one can be detected
+#   * total options       - number of distinct options (one per help line)
+#   * with aliases        - options spelled more than one way (e.g. -a / --all)
+#   * without aliases     - options with a single spelling
+#   * short option names  - number of short forms  (e.g. -a)
+#   * long  option names  - number of long  forms  (e.g. --all)
+#
+# Recording the version matters because the same program can document a
+# different number of options from one release to the next, so an option count
+# is only meaningful alongside the version it was measured against.
+#
+# It deliberately reports *how many* options exist, not *which* as the `--help`
+# output already shows you which ones.
+#
+# License: see the LICENSE file in the repository root.
+
+set -euo pipefail
+
+readonly CLOP_VERSION="0.2.0"
+readonly PROG="${0##*/}"
+
+# ----------------------------------------------------------------------------
+# Help / version
+# ----------------------------------------------------------------------------
+
+usage() {
+	cat <<EOF
+${PROG} — count the command-line options a program documents in --help
+
+Usage:
+  ${PROG} [OPTIONS] PROGRAM [PROGRAM...]
+  ${PROG} [OPTIONS] -f FILE [-f FILE...]
+  some-program --help | ${PROG} [OPTIONS] -
+
+Sources of help text:
+  PROGRAM            Run 'PROGRAM --help' (stderr merged) and count its options.
+  -f, --file FILE    Read previously captured --help text from FILE.
+  -                  Read help text from standard input.
+
+Output format:
+  (default)          Human-readable report.
+      --csv          Comma-separated values:
+                     name,version,total,with,without,short,long
+      --tsv          Same columns, tab-separated.
+      --no-header    Omit the header row in --csv / --tsv output.
+      --list         Also print the option names that were counted.
+
+Other:
+  --name NAME        Label the next -f/- source as NAME (default: derived
+                     from the file name, or 'stdin').
+  --prog-version V   Record V as the version for the next source. For a PROGRAM
+                     this overrides auto-detection; for -f/- it supplies a
+                     version that cannot be detected from captured help text.
+  -h, --help         Show this help and exit.
+  -V, --version      Show version information and exit.
+
+Version detection:
+  For a PROGRAM, ${PROG} also runs 'PROGRAM --version' and records the first
+  version-like token it finds. For -f/- sources there is no program to query,
+  so the version is blank unless you supply it with --prog-version.
+
+Security:
+  Naming a PROGRAM makes ${PROG} run 'PROGRAM --help' and 'PROGRAM --version',
+  exactly as if you had typed them yourself. Only pass names of programs you
+  trust. To analyze help text without running anything, capture it first and
+  use -f or stdin:
+      untrusted --help > help.txt   # then:   ${PROG} -f help.txt
+
+Examples:
+  ${PROG} ls
+  ${PROG} --csv ls cp mv
+  ls --help | ${PROG} -
+  ${PROG} -f captured-help.txt
+EOF
+}
+
+version() {
+	echo "${PROG} ${CLOP_VERSION}"
+}
+
+die() {
+	printf '%s: %s\n' "$PROG" "$*" >&2
+	exit 1
+}
+
+# ----------------------------------------------------------------------------
+# Parsing
+# ----------------------------------------------------------------------------
+
+# sanitize_escapes
+#
+# Reads text on stdin and removes the terminal escape sequences that some
+# programs embed in their `--help` output. Modern GNU coreutils, for example,
+# wraps each option name in bold (SGR) codes and OSC 8 hyperlinks, which would
+# otherwise hide the option spellings from the parser. Two things are stripped:
+#
+#   * OSC sequences   ESC ] ... ST   or   ESC ] ... BEL   (e.g. hyperlinks)
+#   * CSI/SGR codes   ESC [ ... letter                    (e.g. colors, bold)
+#
+# ESC is octal \033 and BEL is octal \007; we embed them literally so the rules
+# work with any POSIX sed, not just GNU sed.
+sanitize_escapes() {
+	local e=$'\033' b=$'\007'
+	LC_ALL=C sed \
+		-e "s/${e}][^${e}${b}]*${e}\\\\//g" \
+		-e "s/${e}][^${e}${b}]*${b}//g" \
+		-e "s/${e}\\[[0-9;?]*[A-Za-z]//g"
+}
+
+# parse_help
+#
+# Reads help text on stdin and writes one record per detected option to stdout.
+# Each record is tab-separated:
+#
+#     <num_short>\t<num_long>\t<name1 name2 ...>
+#
+# The parsing model, line by line:
+#
+#   1. Strip leading whitespace. A candidate option line must then start
+#      with a dash. Anything else (prose, blank lines, "Usage:" headers,
+#      wrapped descriptions) is skipped.
+#   2. Split the line into a "signature" (the option spellings) and a
+#      "description". Help formats separate the two with either a tab or a
+#      run of two-or-more spaces, so we cut at whichever comes first.
+#   3. Within the signature, treat commas as separators and inspect each
+#      token:
+#        --word        -> a long option  (argument suffix like =VAL or
+#                         [=VAL] is dropped, leaving --word)
+#        -x            -> a short option (single character after the dash)
+#        anything else -> an argument placeholder (e.g. FILE, =N); ignored.
+#   4. All spellings found on one line are aliases of one logical option.
+#      Lines that yield no real spelling (a lone "-", a "--" end-of-options
+#      marker, a dash used as a bullet) are not counted.
+parse_help() {
+	local line trimmed sig cleaned tok
+	local -a shorts longs toks
+
+	while IFS= read -r line; do
+		# Strip leading whitespace (spaces and tabs).
+		trimmed="${line#"${line%%[![:space:]]*}"}"
+
+		# Must look like an option line.
+		[[ $trimmed == -* ]] || continue
+
+		# Signature = text before the first tab or first run of >=2 spaces.
+		sig="${trimmed%%$'\t'*}"
+		sig="${sig%%"  "*}"
+
+		# Tokenize: commas act as separators, then split on whitespace.
+		# We use `read -ra` rather than an unquoted `for` loop on purpose:
+		# `read` splits on IFS *without* performing pathname expansion, so a
+		# help line that happens to contain shell glob characters (*, ?, [...])
+		# can never expand against files in the current directory.
+		cleaned="${sig//,/ }"
+		shorts=()
+		longs=()
+		IFS=' ' read -ra toks <<<"$cleaned"
+		for tok in "${toks[@]}"; do
+			if [[ $tok == --[A-Za-z]* ]]; then
+				# Long option: drop any =VALUE or [=VALUE] suffix.
+				tok="${tok%%=*}"
+				tok="${tok%%[*}"
+				longs+=("$tok")
+			elif [[ $tok == -[A-Za-z0-9]* ]]; then
+				# Short option: keep the dash and the single character.
+				shorts+=("-${tok:1:1}")
+			fi
+			# Everything else is an argument placeholder; ignore it.
+		done
+
+		# Skip lines that did not yield a real option spelling.
+		if (( ${#shorts[@]} + ${#longs[@]} == 0 )); then
+			continue
+		fi
+
+		printf '%d\t%d\t%s\n' \
+			"${#shorts[@]}" "${#longs[@]}" \
+			"${shorts[*]:-} ${longs[*]:-}"
+	done
+}
+
+# ----------------------------------------------------------------------------
+# Counting and reporting
+# ----------------------------------------------------------------------------
+
+# Running totals across all processed programs (used for the SUMMARY line).
+sum_count=0          # number of programs processed
+sum_total=0
+sum_with=0
+sum_without=0
+sum_short=0
+sum_long=0
+
+# process_one NAME VERSION HELP_TEXT
+#
+# Counts the options in HELP_TEXT and emits a report for the source labelled
+# NAME (recorded at program version VERSION), using the globally selected
+# output format. VERSION may be empty when it could not be determined.
+process_one() {
+	local name="$1" version="$2" help_text="$3"
+	local records
+	local total=0 with=0 without=0 nshort=0 nlong=0
+	local -a names=()
+
+	records="$(printf '%s\n' "$help_text" | sanitize_escapes | parse_help)"
+
+	if [[ -n $records ]]; then
+		local ns nl rest
+		while IFS=$'\t' read -r ns nl rest; do
+			[[ -n $ns ]] || continue
+			total=$(( total + 1 ))
+			nshort=$(( nshort + ns ))
+			nlong=$(( nlong + nl ))
+			if (( ns + nl >= 2 )); then
+				with=$(( with + 1 ))
+			else
+				without=$(( without + 1 ))
+			fi
+			# Collect names (trim surrounding whitespace) for --list.
+			rest="${rest#"${rest%%[![:space:]]*}"}"
+			rest="${rest%"${rest##*[![:space:]]}"}"
+			[[ -n $rest ]] && names+=("$rest")
+		done <<<"$records"
+	fi
+
+	# Update running totals.
+	sum_count=$(( sum_count + 1 ))
+	sum_total=$(( sum_total + total ))
+	sum_with=$(( sum_with + with ))
+	sum_without=$(( sum_without + without ))
+	sum_short=$(( sum_short + nshort ))
+	sum_long=$(( sum_long + nlong ))
+
+	case "$OUTPUT_FORMAT" in
+		csv)
+			printf '%s,%s,%d,%d,%d,%d,%d\n' "$name" "$version" "$total" "$with" "$without" "$nshort" "$nlong"
+			;;
+		tsv)
+			printf '%s\t%s\t%d\t%d\t%d\t%d\t%d\n' "$name" "$version" "$total" "$with" "$without" "$nshort" "$nlong"
+			;;
+		human)
+			printf '%s\n' "$name"
+			printf '  version             %s\n' "${version:-unknown}"
+			printf '  total options       %d\n' "$total"
+			printf '  with aliases        %d\n' "$with"
+			printf '  without aliases     %d\n' "$without"
+			printf '  short option names  %d\n' "$nshort"
+			printf '  long option names   %d\n' "$nlong"
+			;;
+	esac
+
+	if [[ $LIST_NAMES -eq 1 && ${#names[@]} -gt 0 ]]; then
+		local n
+		for n in "${names[@]}"; do
+			printf '    %s\n' "$n"
+		done
+	fi
+}
+
+print_header() {
+	case "$OUTPUT_FORMAT" in
+		csv) printf 'name,version,total,with,without,short,long\n' ;;
+		tsv) printf 'name\tversion\ttotal\twith\twithout\tshort\tlong\n' ;;
+	esac
+}
+
+print_summary() {
+	case "$OUTPUT_FORMAT" in
+		csv) printf 'TOTAL,,%d,%d,%d,%d,%d\n' "$sum_total" "$sum_with" "$sum_without" "$sum_short" "$sum_long" ;;
+		tsv) printf 'TOTAL\t\t%d\t%d\t%d\t%d\t%d\n' "$sum_total" "$sum_with" "$sum_without" "$sum_short" "$sum_long" ;;
+		human)
+			printf '\nSUMMARY (%d programs)\n' "$sum_count"
+			printf '  total options       %d\n' "$sum_total"
+			printf '  with aliases        %d\n' "$sum_with"
+			printf '  without aliases     %d\n' "$sum_without"
+			printf '  short option names  %d\n' "$sum_short"
+			printf '  long option names   %d\n' "$sum_long"
+			;;
+	esac
+}
+
+# ----------------------------------------------------------------------------
+# Help-text acquisition
+# ----------------------------------------------------------------------------
+
+# name_from_file PATH -> a friendly label derived from the file name.
+name_from_file() {
+	local base="${1##*/}"
+	base="${base%%.*}"
+	printf '%s' "$base"
+}
+
+# help_from_program NAME -> capture 'NAME --help' (stderr merged).
+help_from_program() {
+	local prog="$1"
+	command -v "$prog" >/dev/null 2>&1 || die "program not found: $prog"
+	# Many programs exit non-zero after printing help; never let that abort us.
+	"$prog" --help 2>&1 || true
+}
+
+# extract_version
+#
+# Reads text on stdin and prints the first version-like token it contains: a
+# run of digits with at least one dot (e.g. 9.1, 1.36.1, 2.40.0). Prints
+# nothing if no such token is present. Matching is done with bash's own regex
+# engine so no external process or pathname expansion is involved.
+extract_version() {
+	local line
+	while IFS= read -r line; do
+		if [[ $line =~ [0-9]+(\.[0-9]+)+ ]]; then
+			printf '%s' "${BASH_REMATCH[0]}"
+			return 0
+		fi
+	done
+	return 0
+}
+
+# version_from_program NAME -> best-effort version string for NAME.
+#
+# Runs 'NAME --version' (stderr merged), strips terminal escapes, and returns
+# the first version-like token found. Returns an empty string when the program
+# offers no recognizable version. The program is assumed to exist already
+# (help_from_program checks this before we are called).
+version_from_program() {
+	local prog="$1" out
+	out="$("$prog" --version 2>&1 | sanitize_escapes | extract_version)" || true
+	printf '%s' "$out"
+}
+
+# ----------------------------------------------------------------------------
+# Argument parsing
+# ----------------------------------------------------------------------------
+
+OUTPUT_FORMAT="human"
+SHOW_HEADER=1
+LIST_NAMES=0
+
+# Work items are stored as three parallel arrays, processed in order. Using
+# separate arrays (instead of packing fields into one string) means a label or
+# path may safely contain any character, including the field delimiters we
+# would otherwise have had to choose.
+#
+#   WORK_KIND[i]  = prog | file | stdin
+#   WORK_LABEL[i] = explicit name from --name (may be empty)
+#   WORK_VERSION[i] = explicit version from --prog-version (may be empty)
+#   WORK_VALUE[i] = program name or file path ("" for stdin)
+declare -a WORK_KIND=()
+declare -a WORK_LABEL=()
+declare -a WORK_VERSION=()
+declare -a WORK_VALUE=()
+pending_name=""      # set by --name, consumed by the next source
+pending_version=""   # set by --prog-version, consumed by the next source
+
+# add_work KIND LABEL VERSION VALUE
+add_work() {
+	WORK_KIND+=("$1")
+	WORK_LABEL+=("$2")
+	WORK_VERSION+=("$3")
+	WORK_VALUE+=("$4")
+}
+
+main() {
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+			-h|--help)    usage; exit 0 ;;
+			-V|--version) version; exit 0 ;;
+			--csv)        OUTPUT_FORMAT="csv" ;;
+			--tsv)        OUTPUT_FORMAT="tsv" ;;
+			--no-header)  SHOW_HEADER=0 ;;
+			--list)       LIST_NAMES=1 ;;
+			--name)
+				[[ $# -ge 2 ]] || die "--name requires an argument"
+				pending_name="$2"; shift ;;
+			--name=*)     pending_name="${1#*=}" ;;
+			--prog-version)
+				[[ $# -ge 2 ]] || die "--prog-version requires an argument"
+				pending_version="$2"; shift ;;
+			--prog-version=*) pending_version="${1#*=}" ;;
+			-f|--file)
+				[[ $# -ge 2 ]] || die "$1 requires an argument"
+				add_work file "$pending_name" "$pending_version" "$2"; pending_name=""; pending_version=""; shift ;;
+			--file=*)     add_work file "$pending_name" "$pending_version" "${1#*=}"; pending_name=""; pending_version="" ;;
+			-)            add_work stdin "$pending_name" "$pending_version" ""; pending_name=""; pending_version="" ;;
+			--)           shift; break ;;
+			-*)           die "unknown option: $1 (try '$PROG --help')" ;;
+			*)            add_work prog "" "$pending_version" "$1"; pending_version="" ;;
+		esac
+		shift
+	done
+
+	# Remaining args after '--' are program names.
+	while [[ $# -gt 0 ]]; do
+		add_work prog "" "$pending_version" "$1"; pending_version=""
+		shift
+	done
+
+	[[ ${#WORK_KIND[@]} -gt 0 ]] || die "no program or file given (try '$PROG --help')"
+
+	[[ $SHOW_HEADER -eq 1 ]] && print_header
+
+	local first=1 i kind label value name version help_text
+	for i in "${!WORK_KIND[@]}"; do
+		kind="${WORK_KIND[$i]}"
+		label="${WORK_LABEL[$i]}"
+		value="${WORK_VALUE[$i]}"
+
+		# Blank line between human-format reports for readability.
+		if [[ $OUTPUT_FORMAT == human && $first -eq 0 ]]; then
+			echo
+		fi
+		first=0
+
+		case "$kind" in
+			prog)
+				name="$value"
+				help_text="$(help_from_program "$value")"
+				version="${WORK_VERSION[$i]}"
+				[[ -n $version ]] || version="$(version_from_program "$value")"
+				;;
+			file)
+				[[ -f $value ]] || die "no such file: $value"
+				name="${label:-$(name_from_file "$value")}"
+				help_text="$(cat -- "$value")"
+				version="${WORK_VERSION[$i]}"
+				;;
+			stdin)
+				name="${label:-stdin}"
+				help_text="$(cat -)"
+				version="${WORK_VERSION[$i]}"
+				;;
+		esac
+
+		process_one "$name" "$version" "$help_text"
+	done
+
+	# Show a combined summary only when there is more than one source.
+	if [[ ${#WORK_KIND[@]} -gt 1 ]]; then
+		print_summary
+	fi
+}
+
+main "$@"

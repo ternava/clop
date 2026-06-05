@@ -1,0 +1,8 @@
+Usage: glob [OPTION]...
+
+Regression fixture: the option signature contains shell glob metacharacters
+(*, ?, [...]). The parser must treat them as plain argument placeholders and
+must never expand them against files in the current directory.
+
+  -x, --expand *FILE     take a glob argument, e.g. *.txt
+  -q, --query [a-z]?     another placeholder with glob characters

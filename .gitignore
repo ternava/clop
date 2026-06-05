@@ -1,6 +1,9 @@
 # Zola build output
 public/
 
+# Generated copy of the tool, published from tool/clop by `make site`.
+/static/clop
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
