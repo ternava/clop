@@ -4,6 +4,11 @@ public/
 # Generated copy of the tool, published from tool/clop by `make site`.
 /static/clop
 
+# Generated badge artifacts (produced by the clop action / tool/clop-badge).
+/clop-badge.json
+/clop-badge.svg
+/static/clop-badge.svg
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
