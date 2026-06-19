@@ -1,4 +1,4 @@
-# clop — Count cLi OPtions
+# clop: Count cLi OPtions
 
 `clop` counts the command-line options a program advertises in its `--help` text. It is to command-line options what [`cloc`](https://github.com/AlDanial/cloc) is to lines of code: it reports *how many* options a program has, total, how many have aliases, and how many short vs. long forms, for the one-option-per-line help layouts produced by GNU coreutils, BusyBox, and Toybox.
 
