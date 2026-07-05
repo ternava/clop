@@ -1,0 +1,38 @@
+name: clop demo
+
+# Run manually from the Actions tab, or on every push to main.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  count:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Use the action defined in THIS repo (action.yml at the root).
+      # In another repo you would write:  uses: ternava/clop@v1
+      - name: Count options from a captured help file
+        id: clop
+        uses: ./
+        with:
+          file: tool/tests/fixtures/foo.help
+          name: foo
+          label: cli options
+
+      - name: Show the results
+        run: |
+          echo "total   = ${{ steps.clop.outputs.total }}"
+          echo "version = ${{ steps.clop.outputs.version }}"
+          echo "csv     = ${{ steps.clop.outputs.csv }}"
+          echo "--- clop-badge.json ---"
+          cat clop-badge.json
+
+      # Makes clop-badge.json downloadable from the run's "Artifacts" section.
+      - name: Upload the badge JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: clop-badge
+          path: clop-badge.json

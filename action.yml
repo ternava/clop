@@ -1,0 +1,119 @@
+name: 'clop (count CLI options)'
+description: 'Count the options a program documents in --help, with a job summary and shields.io badge JSON.'
+author: 'ternava'
+branding:
+  icon: 'hash'
+  color: 'orange'
+
+inputs:
+  program:
+    description: 'Command whose --help to run and count, e.g. "ls". Must be installed on the runner.'
+    required: false
+    default: ''
+  file:
+    description: 'Path to a captured --help text file to count.'
+    required: false
+    default: ''
+  man:
+    description: 'Path to a roff man page (e.g. doc/tool.1) to render and count.'
+    required: false
+    default: ''
+  name:
+    description: 'Label for the source in reports (default: the program or file name).'
+    required: false
+    default: ''
+  label:
+    description: 'Left-hand text on the badge.'
+    required: false
+    default: 'cli options'
+  field:
+    description: 'Metric the badge shows: total | with | without | short | long.'
+    required: false
+    default: 'total'
+  badge-path:
+    description: 'Where to write the shields.io endpoint JSON file.'
+    required: false
+    default: 'clop-badge.json'
+
+outputs:
+  total:
+    description: 'Total number of options counted.'
+    value: ${{ steps.run.outputs.total }}
+  version:
+    description: 'Detected program version (may be empty).'
+    value: ${{ steps.run.outputs.version }}
+  csv:
+    description: 'Raw clop CSV record: name,version,total,with,without,short,long.'
+    value: ${{ steps.run.outputs.csv }}
+  badge-json:
+    description: 'The shields.io endpoint JSON string.'
+    value: ${{ steps.run.outputs.badge_json }}
+
+runs:
+  using: 'composite'
+  steps:
+    - id: run
+      shell: bash
+      env:
+        IN_PROGRAM: ${{ inputs.program }}
+        IN_FILE: ${{ inputs.file }}
+        IN_MAN: ${{ inputs.man }}
+        IN_NAME: ${{ inputs.name }}
+        IN_LABEL: ${{ inputs.label }}
+        IN_FIELD: ${{ inputs.field }}
+        IN_BADGE_PATH: ${{ inputs.badge-path }}
+      run: |
+        set -euo pipefail
+
+        # These ship inside this action's own checkout.
+        clop="$GITHUB_ACTION_PATH/tool/clop"
+        badge="$GITHUB_ACTION_PATH/tool/clop-badge"
+        chmod +x "$clop" "$badge"
+
+        name_arg=()
+        [ -n "$IN_NAME" ] && name_arg=(--name "$IN_NAME")
+
+        # 1. Acquire help text and run clop in CSV mode.
+        if [ -n "$IN_PROGRAM" ]; then
+          csv="$("$clop" --csv --no-header "$IN_PROGRAM")"
+        elif [ -n "$IN_FILE" ]; then
+          csv="$("$clop" --csv --no-header "${name_arg[@]}" -f "$IN_FILE")"
+        elif [ -n "$IN_MAN" ]; then
+          # Render the man page to plain text; no compiler or build needed.
+          text="$(LC_ALL=C man -l "$IN_MAN" 2>/dev/null | col -bx)"
+          csv="$(printf '%s\n' "$text" | "$clop" --csv --no-header "${name_arg[@]}" -)"
+        else
+          echo "::error::Provide one of: program, file, or man."
+          exit 1
+        fi
+
+        # 2. Take the first record (single source = single line).
+        line="$(printf '%s\n' "$csv" | head -n1)"
+        IFS=, read -r c_name c_version c_total c_with c_without c_short c_long <<<"$line"
+
+        # 3. Expose outputs.
+        {
+          echo "total=$c_total"
+          echo "version=$c_version"
+          echo "csv=$line"
+        } >> "$GITHUB_OUTPUT"
+
+        # 4. Build the shields.io badge JSON.
+        json="$(printf '%s\n' "$line" | "$badge" --label "$IN_LABEL" --field "$IN_FIELD")"
+        printf '%s\n' "$json" > "$IN_BADGE_PATH"
+        {
+          echo "badge_json<<__CLOP_EOF__"
+          echo "$json"
+          echo "__CLOP_EOF__"
+        } >> "$GITHUB_OUTPUT"
+
+        # 5. Write a human-readable table to the run's job summary.
+        {
+          echo "### clop: CLI option count"
+          echo ""
+          echo "| name | version | total | with aliases | without | short | long |"
+          echo "|------|---------|-------|--------------|---------|-------|------|"
+          echo "| ${c_name} | ${c_version:-n/a} | ${c_total} | ${c_with} | ${c_without} | ${c_short} | ${c_long} |"
+          echo ""
+          echo "Badge JSON written to \`${IN_BADGE_PATH}\`."
+        } >> "$GITHUB_STEP_SUMMARY"

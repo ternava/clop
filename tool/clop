@@ -3,7 +3,7 @@
 # clop: Count CLi OPtions
 #
 # A small tool that counts the command-line options a program advertises in
-# its `--help` text. Think of it as `cloc`, but instead of counting lines of
+# its `--help` text. It is like `cloc`, but instead of counting lines of
 # code in a codebase, it counts the options in a program's interface.
 #
 # It understands the common one-option-per-line help layouts produced by GNU
@@ -26,7 +26,7 @@
 # different number of options from one release to the next, so an option count
 # is only meaningful alongside the version it was measured against.
 #
-# It deliberately reports *how many* options exist, not *which* as the `--help`
+# It reports how many options exist, not which ones, since the `--help`
 # output already shows you which ones.
 #
 # License: see the LICENSE file in the repository root.
@@ -42,7 +42,7 @@ readonly PROG="${0##*/}"
 
 usage() {
 	cat <<EOF
-${PROG} — count the command-line options a program documents in --help
+${PROG}: count the command-line options a program documents in --help
 
 Usage:
   ${PROG} [OPTIONS] PROGRAM [PROGRAM...]
@@ -78,7 +78,7 @@ Version detection:
 
 Security:
   Naming a PROGRAM makes ${PROG} run 'PROGRAM --help' and 'PROGRAM --version',
-  exactly as if you had typed them yourself. Only pass names of programs you
+  just as you would at your shell. Only pass names of programs you
   trust. To analyze help text without running anything, capture it first and
   use -f or stdin:
       untrusted --help > help.txt   # then:   ${PROG} -f help.txt

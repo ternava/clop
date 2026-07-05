@@ -2,15 +2,13 @@
 title = "Usage"
 +++
 
-## Usage
-
 ```sh
 clop ls                      # run 'ls --help' and count its options
 clop ls cp mv                # several programs, plus a combined SUMMARY
 clop --csv ls cp mv          # machine-readable CSV
-clop --list ls               # also print the option names that were counted
-ls --help | clop -           # read help text from standard input
-clop -f captured-help.txt    # read help text from a saved file
+clop --list ls               # also print the option names counted
+ls --help | clop -           # read help from standard input
+clop -f captured-help.txt    # read help from a saved file
 ```
 
 Example output:
@@ -28,35 +26,33 @@ ls
 
 ## What it reports
 
-For each program, **clop** records the program's version and prints five numbers:
+| Field                | Meaning                                                   |
+|----------------------|-----------------------------------------------------------|
+| `version`            | Program version, from `program --version`.                |
+| `total options`      | Distinct options (one per option line in the help).       |
+| `with aliases`       | Options with more than one spelling, e.g. `-a` / `--all`. |
+| `without aliases`    | Options with exactly one spelling.                        |
+| `short option names` | Short forms, e.g. `-a`, `-1`.                             |
+| `long option names`  | Long forms, e.g. `--all`, `--block-size`.                 |
 
-| Field                | Meaning                                                       |
-|----------------------|---------------------------------------------------------------|
-| `version`            | The program's version, detected from `program --version`.     |
-| `total options`      | Number of distinct options (one per option line in the help). |
-| `with aliases`       | Options that have more than one spelling, e.g. `-a` / `--all`. |
-| `without aliases`    | Options that have exactly one spelling.                       |
-| `short option names` | Number of short forms counted, e.g. `-a`, `-1`.               |
-| `long option names`  | Number of long forms counted, e.g. `--all`, `--block-size`.   |
-
-<!-- Recording the version matters because the same program can document a different
-number of options from one release to the next, so a count is only meaningful
-next to the version it was measured against. -->
+The same program can list different options across releases, so a count only
+means something next to its version.
 
 ## Output formats
 
-- default: a human-readable report
-- `--csv`: `name,version,total,with,without,short,long`
-- `--tsv`: the same columns, tab-separated
-- `--no-header`: omit the header row in `--csv` / `--tsv`
-- `--list`: additionally list the option names that were counted
+| Flag          | Output                                        |
+|---------------|-----------------------------------------------|
+| *(default)*   | Human-readable report.                        |
+| `--csv`       | `name,version,total,with,without,short,long`  |
+| `--tsv`       | The same columns, tab-separated.              |
+| `--no-header` | Omit the header row in `--csv` / `--tsv`.     |
+| `--list`      | Also list the option names counted.           |
 
 ## Labelling sources
 
-When you read from a file or standard input, there is no program name or
-version for **clop** to discover. You can supply them yourself:
+A file or stdin has no program name or version to detect, so supply them:
 
 ```sh
-clop --name busybox -f busybox.help                 # label the source
-clop --name tar --prog-version 1.35 -f tar.help     # also record a version
+clop --name busybox -f busybox.help               # label the source
+clop --name tar --prog-version 1.35 -f tar.help   # also record a version
 ```

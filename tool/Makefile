@@ -1,4 +1,4 @@
-# Makefile for clop — Count CLi OPtions
+# Makefile for clop (Count CLi OPtions)
 #
 # This Makefile lives in tool/ alongside the clop script and its tests, so the
 # tool is fully self-contained. The Zola project page lives one level up.

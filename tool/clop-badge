@@ -1,0 +1,150 @@
+#!/usr/bin/env sh
+#
+# clop-badge: turn one line of clop CSV output into a badge.
+#
+# clop already prints machine-readable CSV:
+#
+#     name,version,total,with,without,short,long
+#
+# This helper reads ONE such line on standard input and emits either:
+#
+#   * a shields.io "endpoint" JSON object (default), which shields.io renders
+#     into a live badge, or
+#   * a small, self-contained SVG (--svg) you can embed or commit directly.
+#
+# Example:
+#     clop --csv --no-header ls | clop-badge --label "cli options"
+#     clop --csv --no-header ls | clop-badge --svg > clop.svg
+#
+# It is plain POSIX sh with no dependencies, so it runs anywhere clop does.
+
+set -eu
+
+PROG=${0##*/}
+LABEL="cli options"
+COLOR="d97757"   # clop's terracotta theme color (hex, no leading #)
+FORMAT="json"    # json | svg
+FIELD="total"    # total | with | without | short | long
+
+usage() {
+	cat <<EOF
+${PROG}: make a shields.io badge from clop CSV output
+
+Usage:
+  clop --csv --no-header PROGRAM | ${PROG} [OPTIONS]
+
+Options:
+  --label TEXT    Left-hand label text          (default: "cli options")
+  --field NAME    Which column to show:
+                  total | with | without | short | long   (default: total)
+  --color COLOR   Badge color, hex or shields name         (default: d97757)
+  --svg           Emit a self-contained SVG instead of shields JSON
+  --json          Emit shields endpoint JSON (the default)
+  -h, --help      Show this help and exit
+EOF
+}
+
+die() { printf '%s: %s\n' "$PROG" "$*" >&2; exit 1; }
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--label)   [ $# -ge 2 ] || die "--label needs a value"; LABEL=$2; shift ;;
+		--label=*) LABEL=${1#*=} ;;
+		--field)   [ $# -ge 2 ] || die "--field needs a value"; FIELD=$2; shift ;;
+		--field=*) FIELD=${1#*=} ;;
+		--color)   [ $# -ge 2 ] || die "--color needs a value"; COLOR=$2; shift ;;
+		--color=*) COLOR=${1#*=} ;;
+		--svg)     FORMAT=svg ;;
+		--json)    FORMAT=json ;;
+		-h|--help) usage; exit 0 ;;
+		*)         die "unknown option: $1" ;;
+	esac
+	shift
+done
+
+# Read one clop CSV record from stdin: name,version,total,with,without,short,long
+IFS= read -r line || die "no input on stdin (pipe 'clop --csv --no-header' into me)"
+line=${line%
+}                              # strip a trailing CR, if any (CRLF input)
+
+# Split the comma-separated record into positional parameters. We disable
+# pathname expansion first so a value can never glob against the filesystem,
+# and set IFS to a comma so empty fields (e.g. a missing version) are kept.
+set -f
+OLDIFS=$IFS
+IFS=,
+# shellcheck disable=SC2086
+set -- $line
+IFS=$OLDIFS
+set +f
+
+c_total=${3:-0}
+c_with=${4:-0}
+c_without=${5:-0}
+c_short=${6:-0}
+c_long=${7:-0}
+
+case "$FIELD" in
+	total)   VALUE=$c_total ;;
+	with)    VALUE=$c_with ;;
+	without) VALUE=$c_without ;;
+	short)   VALUE=$c_short ;;
+	long)    VALUE=$c_long ;;
+	*)       die "unknown --field: $FIELD (use total|with|without|short|long)" ;;
+esac
+
+# ----------------------------------------------------------------------------
+# Output
+# ----------------------------------------------------------------------------
+
+if [ "$FORMAT" = json ]; then
+	# shields.io "endpoint" schema. Minimal JSON escaping of the label.
+	esc=$(printf '%s' "$LABEL" | sed 's/\\/\\\\/g; s/"/\\"/g')
+	printf '{"schemaVersion":1,"label":"%s","message":"%s","color":"%s"}\n' \
+		"$esc" "$VALUE" "$COLOR"
+	exit 0
+fi
+
+# --- SVG ---------------------------------------------------------------------
+# Resolve a few shields color names to hex; pass hex through; else fall back.
+case "$COLOR" in
+	brightgreen) hex="#4c1" ;;
+	green)       hex="#97ca00" ;;
+	yellowgreen) hex="#a4a61d" ;;
+	yellow)      hex="#dfb317" ;;
+	orange)      hex="#fe7d37" ;;
+	red)         hex="#e05d44" ;;
+	blue)        hex="#007ec6" ;;
+	lightgrey)   hex="#9f9f9f" ;;
+	*)
+		if printf '%s' "$COLOR" | grep -Eq '^[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$'; then
+			hex="#$COLOR"
+		else
+			hex="#555"
+		fi
+		;;
+esac
+
+# Rough text metrics: ~7px per character plus padding. Good enough to render
+# cleanly without depending on a font-measuring library.
+lw=$(( ${#LABEL} * 7 + 10 ))
+vw=$(( ${#VALUE} * 7 + 10 ))
+w=$(( lw + vw ))
+lx=$(( lw / 2 ))
+vx=$(( lw + vw / 2 ))
+
+cat <<EOF
+<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="20" role="img" aria-label="$LABEL: $VALUE">
+  <linearGradient id="g" x2="0" y2="100%">
+    <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
+    <stop offset="1" stop-opacity=".1"/>
+  </linearGradient>
+  <rect width="$w" height="20" rx="3" fill="#555"/>
+  <rect x="$lw" width="$vw" height="20" rx="3" fill="$hex"/>
+  <rect width="$w" height="20" rx="3" fill="url(#g)"/>
+  <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11">
+    <text x="$lx" y="14">$LABEL</text>
+    <text x="$vx" y="14">$VALUE</text>
+  </g>
+</svg>
+EOF
